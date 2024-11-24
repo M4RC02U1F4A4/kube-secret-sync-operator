@@ -11,7 +11,7 @@ def sync_secret(secret_name, namespace, secret_data):
         ns_name = ns.metadata.name
         if ns_name == namespace: 
             continue
-        logging.info(f"Synching {secret_name} in {ns_name}...")
+        logging.info(f"Synching {secret_name} secret in {ns_name} namepsace...")
         try:    
             api.read_namespaced_secret(secret_name, ns_name)
             api.delete_namespaced_secret(secret_name, ns_name)
@@ -38,7 +38,7 @@ def delete_synced_secrets(secret_name):
         ns_name = ns.metadata.name
         try:
             api.read_namespaced_secret(secret_name, ns_name)
-            logging.info(f"Deleting {secret_name} from {ns_name}...")
+            logging.info(f"Deleting {secret_name} secret from {ns_name} namespace...")
             api.delete_namespaced_secret(secret_name, ns_name)
         except ApiException as e:
             if e.status != 404:

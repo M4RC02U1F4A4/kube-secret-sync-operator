@@ -1,0 +1,28 @@
+name: New release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  backend-build-and-push:
+      runs-on: ubuntu-latest
+
+      steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build Docker Image
+        run: |
+          docker build -f Dockerfile -t ghcr.io/m4rc02u1f4a4/kube-secret-sync-operator:latest -t ghcr.io/m4rc02u1f4a4/kube-secret-sync-operator:${{ github.event.release.tag_name }} .
+      
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u m4rc02u1f4a4 --password-stdin
+      
+      - name: Push Docker Image to GitHub Container Registry
+        run: |
+          docker push ghcr.io/m4rc02u1f4a4/kube-secret-sync-operator:latest
+          docker push ghcr.io/m4rc02u1f4a4/kube-secret-sync-operator:${{ github.event.release.tag_name }}

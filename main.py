@@ -53,7 +53,6 @@ def sync_secret_handler(spec, meta, namespace, **kwargs):
     api = kubernetes.client.CoreV1Api()
     secret = api.read_namespaced_secret(secret_name, namespace)
     logging.info(f"Secret {secret_name} created in the {namespace} namespace, syncing with all other namespaces.")
-
     sync_secret(secret_name, namespace, secret)
 
 @kopf.on.delete('v1', 'Secret', labels={"kss-operator/sync": "sync"})

@@ -11,3 +11,14 @@ The **Kubernetes Secret Sync Operator** is a custom operator designed to synchro
 - **Handles Secret Deletion:** If a Secret with the defined label is deleted, it is also removed from all other namespaces in the cluster.
 
 ---
+
+## Installation
+
+### Latest version
+```shell
+kubectl apply -f https://raw.githubusercontent.com/M4RC02U1F4A4/kube-secret-sync-operator/refs/heads/main/manifest.yaml
+```
+
+## Usage
+
+Simply add the label `"kss-operator/sync": "sync"` to the secret that you want to sync to all the namespaces.

@@ -5,7 +5,7 @@ on:
     types: [published]
 
 jobs:
-  backend-build-and-push:
+  build-image:
       runs-on: ubuntu-latest
 
       steps:

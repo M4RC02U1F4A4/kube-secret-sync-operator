@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kss-operator
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-secret-sync-operator-sa
+  namespace: kss-operator
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-secret-sync-operator-clusterrole
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "create", "delete", "update", "watch", "patch"]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [list, watch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create]
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-secret-sync-operator-clusterrolebinding
+subjects:
+  - kind: ServiceAccount
+    name: kube-secret-sync-operator-sa
+    namespace: kss-operator
+roleRef:
+  kind: ClusterRole
+  name: kube-secret-sync-operator-clusterrole
+  apiGroup: rbac.authorization.k8s.io
+
+
+---
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kube-secret-sync-operator
+  namespace: kss-operator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: kube-secret-sync-operator
+  template:
+    metadata:
+      labels:
+        app: kube-secret-sync-operator
+    spec:
+      serviceAccountName: kube-secret-sync-operator-sa
+      containers:
+      - name: kube-secret-sync-operator
+        image: ghcr.io/m4rc02u1f4a4/kube-secret-sync-operator:latest
+        imagePullPolicy: Always

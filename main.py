@@ -47,9 +47,82 @@ def create_event(api, name, namespace, reason, message, event_type="Normal", inv
         logger.warning(f"Failed to create event: {e}")
 
 def is_synced_secret(secret) -> bool:
-    """Chekk if the secret is a synced copy created by kss-operator."""
+    """Check if the secret is a synced copy created by kss-operator."""
     annotations = secret.metadata.annotations or {}
     return SYNC_SOURCE_ANNOTATION in annotations
+
+def create_or_update_secret(api, secret_name, ns_name, source_namespace, secret_data):
+    """
+    Create or update a secret.
+    Returns True if successful, False otherwise.
+    """
+    new_secret = kubernetes.client.V1Secret(
+        metadata=kubernetes.client.V1ObjectMeta(
+            name=secret_name,
+            labels={
+                "kss-operator/sync": "synced"
+            },
+            annotations={
+                SYNC_SOURCE_ANNOTATION: source_namespace,
+                SYNC_TIMESTAMP_ANNOTATION: str(int(time.time()))
+            }
+        ),
+        data=secret_data.data,
+        type=secret_data.type
+    )
+    
+    try:
+        # Try to read existing secret
+        existing_secret = api.read_namespaced_secret(secret_name, ns_name)
+        
+        # Check if existing secret is a synced copy
+        if not is_synced_secret(existing_secret):
+            logger.warning(
+                f"Secret '{secret_name}' in namespace '{ns_name}' exists but is not synced. "
+                f"Skipping to avoid overwriting manual secret."
+            )
+            create_event(
+                api, secret_name, ns_name,
+                reason="SyncSkipped",
+                message=f"Secret exists but was not created by kss-operator. Skipping sync from {source_namespace}.",
+                event_type="Warning"
+            )
+            return False
+        
+        # Update existing synced secret
+        logger.debug(f"Updating existing synced secret in '{ns_name}'")
+        api.patch_namespaced_secret(
+            name=secret_name,
+            namespace=ns_name,
+            body=new_secret
+        )
+        return True
+        
+    except ApiException as e:
+        if e.status == 404:
+            # Secret doesn't exist, try to create it
+            try:
+                api.create_namespaced_secret(namespace=ns_name, body=new_secret)
+                return True
+            except ApiException as create_error:
+                if create_error.status == 409:
+                    # Race condition: secret was created between read and create
+                    # Will be fixed in next reconciliation loop
+                    logger.debug(
+                        f"Race condition detected for secret '{secret_name}' in '{ns_name}', "
+                        f"will be reconciled in next cycle"
+                    )
+                    return False
+                else:
+                    logger.error(
+                        f"Failed to create secret '{secret_name}' in namespace '{ns_name}': {create_error}"
+                    )
+                    return False
+        else:
+            logger.error(
+                f"Error reading secret '{secret_name}' in namespace '{ns_name}': {e}"
+            )
+            return False
 
 def sync_secret(secret_name, namespace, secret_data):
     api = kubernetes.client.CoreV1Api()
@@ -76,66 +149,15 @@ def sync_secret(secret_name, namespace, secret_data):
         
         logger.debug(f"Processing namespace '{ns_name}' for secret '{secret_name}'")
         
-        try:
-            existing_secret = api.read_namespaced_secret(secret_name, ns_name)
-            
-            # Check if existing secret is a synced copy
-            if is_synced_secret(existing_secret):
-                logger.debug(f"Deleting existing synced copy in '{ns_name}'")
-                api.delete_namespaced_secret(secret_name, ns_name)
-            else:
-                logger.warning(
-                    f"Secret '{secret_name}' in namespace '{ns_name}' exists but is not synced. "
-                    f"Skipping to avoid overwriting manual secret."
-                )
-                create_event(
-                    api, secret_name, ns_name,
-                    reason="SyncSkipped",
-                    message=f"Secret exists but was not created by kss-operator. Skipping sync from {namespace}.",
-                    event_type="Warning"
-                )
-                continue
-                
-        except ApiException as e:
-            if e.status != 404:
-                logger.error(
-                    f"Error reading/deleting secret '{secret_name}' in namespace '{ns_name}': {e}",
-                    exc_info=True
-                )
-                fail_count += 1
-                continue
-        
-        # Create the synced secret
-        try:
-            new_secret = kubernetes.client.V1Secret(
-                metadata=kubernetes.client.V1ObjectMeta(
-                    name=secret_name,
-                    labels={
-                        "kss-operator/sync": "synced"
-                    },
-                    annotations={
-                        SYNC_SOURCE_ANNOTATION: namespace,
-                        SYNC_TIMESTAMP_ANNOTATION: str(int(time.time()))
-                    }
-                ),
-                data=secret_data.data,
-                type=secret_data.type
-            )
-            api.create_namespaced_secret(namespace=ns_name, body=new_secret)
+        if create_or_update_secret(api, secret_name, ns_name, namespace, secret_data):
             success_count += 1
-            
             logger.info(f"Successfully synced secret '{secret_name}' to namespace '{ns_name}'")
-            
-        except ApiException as e:
-            logger.error(
-                f"Failed to create secret '{secret_name}' in namespace '{ns_name}': {e}",
-                exc_info=True
-            )
+        else:
             fail_count += 1
             create_event(
                 api, secret_name, ns_name,
                 reason="SyncFailed",
-                message=f"Failed to sync secret from namespace '{namespace}': {str(e)}",
+                message=f"Failed to sync secret from namespace '{namespace}'",
                 event_type="Warning"
             )
     
@@ -294,7 +316,7 @@ def reconcile_secret(meta, namespace, body, **kwargs):
                 
                 # Only update if it's a synced secret
                 if is_synced_secret(existing):
-                    # Confronta i dati
+                    # Compare data
                     if existing.data != source_secret.data or existing.type != source_secret.type:
                         logger.info(
                             f"Reconciliation: Secret '{secret_name}' in namespace '{ns_name}' "
@@ -302,21 +324,10 @@ def reconcile_secret(meta, namespace, body, **kwargs):
                         )
                         changes_detected = True
                         
-                        # Delete and recreate
-                        api.delete_namespaced_secret(secret_name, ns_name)
-                        new_secret = kubernetes.client.V1Secret(
-                            metadata=kubernetes.client.V1ObjectMeta(
-                                name=secret_name,
-                                labels={"kss-operator/sync": "synced"},
-                                annotations={
-                                    SYNC_SOURCE_ANNOTATION: namespace,
-                                    SYNC_TIMESTAMP_ANNOTATION: str(int(time.time()))
-                                }
-                            ),
-                            data=source_secret.data,
-                            type=source_secret.type
-                        )
-                        api.create_namespaced_secret(namespace=ns_name, body=new_secret)
+                        if create_or_update_secret(api, secret_name, ns_name, namespace, source_secret):
+                            logger.info(f"Successfully reconciled secret '{secret_name}' in namespace '{ns_name}'")
+                        else:
+                            logger.debug(f"Failed to reconcile secret '{secret_name}' in namespace '{ns_name}'")
                         
             except ApiException as e:
                 if e.status == 404:
@@ -327,23 +338,13 @@ def reconcile_secret(meta, namespace, body, **kwargs):
                     )
                     changes_detected = True
                     
-                    new_secret = kubernetes.client.V1Secret(
-                        metadata=kubernetes.client.V1ObjectMeta(
-                            name=secret_name,
-                            labels={"kss-operator/sync": "synced"},
-                            annotations={
-                                SYNC_SOURCE_ANNOTATION: namespace,
-                                SYNC_TIMESTAMP_ANNOTATION: str(int(time.time()))
-                            }
-                        ),
-                        data=source_secret.data,
-                        type=source_secret.type
-                    )
-                    api.create_namespaced_secret(namespace=ns_name, body=new_secret)
+                    if create_or_update_secret(api, secret_name, ns_name, namespace, source_secret):
+                        logger.info(f"Successfully created secret '{secret_name}' in namespace '{ns_name}'")
+                    else:
+                        logger.debug(f"Failed to create secret '{secret_name}' in namespace '{ns_name}'")
                 else:
                     logger.error(
-                        f"Reconciliation error for secret '{secret_name}' in namespace '{ns_name}': {e}",
-                        exc_info=True
+                        f"Reconciliation error for secret '{secret_name}' in namespace '{ns_name}': {e}"
                     )
         
         if changes_detected:

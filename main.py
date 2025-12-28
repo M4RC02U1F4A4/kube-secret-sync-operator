@@ -3,7 +3,9 @@ import kubernetes.client
 from kubernetes.client.rest import ApiException
 import logging
 import time
+from datetime import datetime, timezone
 
+# Configurazione logging strutturato
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -19,6 +21,8 @@ def create_event(api, name, namespace, reason, message, event_type="Normal", inv
     Create a Kubernetes event for the specified object.
     """
     try:
+        now = datetime.now(timezone.utc)
+        
         event = kubernetes.client.CoreV1Event(
             metadata=kubernetes.client.V1ObjectMeta(
                 name=f"{name}.{int(time.time() * 1000000)}",
@@ -33,8 +37,8 @@ def create_event(api, name, namespace, reason, message, event_type="Normal", inv
             reason=reason,
             message=message,
             type=event_type,
-            first_timestamp=kubernetes.client.V1EventSource(),
-            last_timestamp=kubernetes.client.V1EventSource(),
+            first_timestamp=now,
+            last_timestamp=now,
             count=1,
             source=kubernetes.client.V1EventSource(component="kss-operator")
         )

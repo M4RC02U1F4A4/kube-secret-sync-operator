@@ -3,6 +3,7 @@ import kubernetes.client
 from kubernetes.client.rest import ApiException
 import logging
 
+# Annotation keys
 SYNC_SOURCE_ANNOTATION = "kss-operator/source-namespace"
 SYNC_TIMESTAMP_ANNOTATION = "kss-operator/synced-at"
 
@@ -119,3 +120,78 @@ def sync_secrets_in_new_namespace_handler(spec, meta, **kwargs):
         secret_name = secret.metadata.name
         logging.info(f"Syncing secret {secret_name} to {new_namespace} namespace...")
         sync_secret(secret_name, secret.metadata.namespace, secret)
+
+@kopf.timer('v1', 'Secret', labels={"kss-operator/sync": "sync"}, interval=300.0)
+def reconcile_secret(meta, namespace, body, **kwargs):
+    """
+    Periodic reconciliation every 5 minutes.
+    Ensures all secrets are properly synchronized and recovers any events missed during controller downtime.
+    """
+    secret_name = meta['name']
+    
+    # Filter out synced copies
+    if is_synced_secret(body):
+        return
+    
+    logging.info(f"Reconciling secret {secret_name} in namespace {namespace}")
+    
+    api = kubernetes.client.CoreV1Api()
+    
+    try:
+        source_secret = api.read_namespaced_secret(secret_name, namespace)
+        namespaces = api.list_namespace().items
+        
+        for ns in namespaces:
+            ns_name = ns.metadata.name
+            if ns_name == namespace:
+                continue
+            
+            try:
+                # Check if the secret exists in the target namespace
+                existing = api.read_namespaced_secret(secret_name, ns_name)
+                
+                # Only update if it's a synced secret
+                if is_synced_secret(existing):
+                    # Confronta i dati
+                    if existing.data != source_secret.data or existing.type != source_secret.type:
+                        logging.info(f"Secret {secret_name} in {ns_name} is out of sync, updating...")
+                        # Delete and recreate
+                        api.delete_namespaced_secret(secret_name, ns_name)
+                        import time
+                        new_secret = kubernetes.client.V1Secret(
+                            metadata=kubernetes.client.V1ObjectMeta(
+                                name=secret_name,
+                                labels={"kss-operator/sync": "synced"},
+                                annotations={
+                                    SYNC_SOURCE_ANNOTATION: namespace,
+                                    SYNC_TIMESTAMP_ANNOTATION: str(int(time.time()))
+                                }
+                            ),
+                            data=source_secret.data,
+                            type=source_secret.type
+                        )
+                        api.create_namespaced_secret(namespace=ns_name, body=new_secret)
+                        
+            except ApiException as e:
+                if e.status == 404:
+                    # Secret does not exist, create it
+                    logging.info(f"Secret {secret_name} missing in {ns_name}, creating...")
+                    import time
+                    new_secret = kubernetes.client.V1Secret(
+                        metadata=kubernetes.client.V1ObjectMeta(
+                            name=secret_name,
+                            labels={"kss-operator/sync": "synced"},
+                            annotations={
+                                SYNC_SOURCE_ANNOTATION: namespace,
+                                SYNC_TIMESTAMP_ANNOTATION: str(int(time.time()))
+                            }
+                        ),
+                        data=source_secret.data,
+                        type=source_secret.type
+                    )
+                    api.create_namespaced_secret(namespace=ns_name, body=new_secret)
+                else:
+                    logging.error(f"Error checking secret {secret_name} in {ns_name}: {e}")
+                    
+    except ApiException as e:
+        logging.error(f"Error during reconciliation of {secret_name}: {e}")

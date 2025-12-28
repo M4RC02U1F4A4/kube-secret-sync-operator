@@ -125,11 +125,6 @@ def sync_secret(secret_name, namespace, secret_data):
             success_count += 1
             
             logger.info(f"Successfully synced secret '{secret_name}' to namespace '{ns_name}'")
-            create_event(
-                api, secret_name, ns_name,
-                reason="SecretSynced",
-                message=f"Secret synced from namespace '{namespace}'"
-            )
             
         except ApiException as e:
             logger.error(
@@ -179,12 +174,6 @@ def delete_synced_secrets(secret_name, source_namespace):
                 logger.info(f"Deleting synced secret '{secret_name}' from namespace '{ns_name}'")
                 api.delete_namespaced_secret(secret_name, ns_name)
                 deleted_count += 1
-                
-                create_event(
-                    api, secret_name, ns_name,
-                    reason="SyncedSecretDeleted",
-                    message=f"Synced secret deleted because source in namespace '{source_namespace}' was deleted"
-                )
             else:
                 logger.debug(f"Secret '{secret_name}' in namespace '{ns_name}' is not synced, skipping deletion")
                 
@@ -218,12 +207,6 @@ def sync_secret_handler(spec, meta, namespace, body, **kwargs):
         secret = api.read_namespaced_secret(secret_name, namespace)
         sync_secret(secret_name, namespace, secret)
         
-        create_event(
-            api, secret_name, namespace,
-            reason="SyncTriggered",
-            message=f"Secret sync initiated to all namespaces"
-        )
-        
     except ApiException as e:
         logger.error(
             f"Failed to read secret '{secret_name}' in namespace '{namespace}': {e}",
@@ -249,12 +232,6 @@ def delete_synced_secret_handler(meta, namespace, body, **kwargs):
     
     api = kubernetes.client.CoreV1Api()
     delete_synced_secrets(secret_name, namespace)
-    
-    create_event(
-        api, secret_name, namespace,
-        reason="SyncedSecretsCleanup",
-        message=f"Initiated cleanup of synced copies in all namespaces"
-    )
 
 @kopf.on.create('v1', 'Namespace')
 def sync_secrets_in_new_namespace_handler(spec, meta, **kwargs):
@@ -341,12 +318,6 @@ def reconcile_secret(meta, namespace, body, **kwargs):
                         )
                         api.create_namespaced_secret(namespace=ns_name, body=new_secret)
                         
-                        create_event(
-                            api, secret_name, ns_name,
-                            reason="SecretReconciled",
-                            message=f"Secret reconciled from namespace '{namespace}' (was out of sync)"
-                        )
-                        
             except ApiException as e:
                 if e.status == 404:
                     # Secret does not exist, create it
@@ -369,12 +340,6 @@ def reconcile_secret(meta, namespace, body, **kwargs):
                         type=source_secret.type
                     )
                     api.create_namespaced_secret(namespace=ns_name, body=new_secret)
-                    
-                    create_event(
-                        api, secret_name, ns_name,
-                        reason="SecretReconciled",
-                        message=f"Secret created from namespace '{namespace}' (was missing)"
-                    )
                 else:
                     logger.error(
                         f"Reconciliation error for secret '{secret_name}' in namespace '{ns_name}': {e}",
